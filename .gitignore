@@ -183,3 +183,7 @@ mlx-trace.json
 # Include everything in assets
 !assets/
 !assets/**
+
+# PersonalPlexMLX
+.venv/
+weights/
