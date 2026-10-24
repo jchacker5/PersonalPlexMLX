@@ -10,6 +10,24 @@ This fork adds `personaplex_mlx/`, an inference-only MLX port of
 model in real time (< 80 ms per 12.5 Hz frame) on a MacBook. The upstream PyTorch code in `moshi/`
 is unchanged and is used as the reference in the tests.
 
+### Credits and project relationship
+
+PersonalPlexMLX is an independent community MLX port maintained in
+[jchacker5/PersonalPlexMLX](https://github.com/jchacker5/PersonalPlexMLX).
+It is not an official NVIDIA or Kyutai project and is not affiliated with or endorsed by them.
+This work is published in this repository; it is not a submission to NVIDIA's upstream repository.
+
+- **NVIDIA** developed [PersonaPlex](https://github.com/NVIDIA/personaplex), including the
+  model, original implementation and research. The upstream README is preserved below.
+- **Kyutai** developed [Moshi and Mimi](https://github.com/kyutai-labs/moshi), the foundation
+  used by PersonaPlex. The MLX Mimi codec in `personaplex_mlx/mimi/` is adapted from
+  Kyutai's `moshi_mlx`; its MIT license and source copyright notices are retained.
+- This repository adds the MLX model port, conversion tools, generation loop, benchmarks
+  and parity tests described here. Existing upstream license files and attribution remain in place.
+
+Model weights are not included. Access and use of the weights are governed separately by
+[the NVIDIA model repository](https://huggingface.co/nvidia/personaplex-7b-v1).
+
 ### What is different from upstream
 
 - **Depformer cut to 8 steps.** The checkpoint's depformer runs 16 steps per frame. Steps 8 to 15
