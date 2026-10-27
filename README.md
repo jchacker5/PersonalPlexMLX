@@ -1,3 +1,132 @@
+# PersonalPlexMLX: PersonaPlex on Apple Silicon (MLX)
+
+> **Status: work in progress.** The MLX model, checkpoint converter, streaming generator and
+> benchmark are written and match the upstream PyTorch implementation token-for-token in greedy
+> parity tests. Offline WAV and localhost microphone entry points are implemented.
+> Real weights have been converted locally and the Mimi codec checked against upstream.
+> End-to-end audio quality and real-time performance are not yet accepted: the first full
+> WAV run was interrupted when free disk space fell below the 5 GiB headroom limit.
+
+This fork adds `personaplex_mlx/`, an inference-only MLX port of
+[NVIDIA PersonaPlex](https://github.com/NVIDIA/personaplex) aimed at running the 7B full-duplex
+model in real time (< 80 ms per 12.5 Hz frame) on a MacBook. The upstream PyTorch code in `moshi/`
+is unchanged and is used as the reference in the tests.
+
+### Credits and project relationship
+
+PersonalPlexMLX is an independent community MLX port maintained in
+[jchacker5/PersonalPlexMLX](https://github.com/jchacker5/PersonalPlexMLX).
+It is not an official NVIDIA or Kyutai project and is not affiliated with or endorsed by them.
+This work is published in this repository; it is not a submission to NVIDIA's upstream repository.
+
+- **NVIDIA** developed [PersonaPlex](https://github.com/NVIDIA/personaplex), including the
+  model, original implementation and research. The upstream README is preserved below.
+- **Kyutai** developed [Moshi and Mimi](https://github.com/kyutai-labs/moshi), the foundation
+  used by PersonaPlex. The MLX Mimi codec in `personaplex_mlx/mimi/` is adapted from
+  Kyutai's `moshi_mlx`; its MIT license and source copyright notices are retained.
+- This repository adds the MLX model port, conversion tools, generation loop, benchmarks
+  and parity tests described here. Existing upstream license files and attribution remain in place.
+
+Model weights are not included. Access and use of the weights are governed separately by
+[the NVIDIA model repository](https://huggingface.co/nvidia/personaplex-7b-v1).
+
+### What is different from upstream
+
+- **Depformer cut to 8 steps.** The checkpoint's depformer runs 16 steps per frame. Steps 8 to 15
+  predict the *user's* audio codebooks, which are always overwritten by the microphone input at
+  inference, so they're dropped. The output is identical, and the depformer does half the work and uses half the memory.
+- **One compiled MLX call per frame.** The temporal transformer, text sampling, depformer and audio
+  sampling run in a single `mx.compile`d function, so the GPU syncs once per frame.
+- **Batched system-prompt prefill.** The voice prompt, text prompt and silence padding are fully
+  teacher-forced, so they're replayed on the host and pushed through the transformer in one batched
+  pass instead of hundreds of sequential steps. The resulting state can be snapshotted and restored
+  for instant persona switching.
+- **Fixed-size ring KV cache with length buckets**, so attention cost grows with conversation
+  length instead of always paying for the full 3000-frame context.
+- **Streaming converter.** It reads the 16.7 GB checkpoint with HTTP range requests and quantizes
+  tensor by tensor, so the source file never has to be on disk. Quantization is mixed precision:
+  the temporal transformer, depformer, and embeddings/head each get their own bit width.
+- Upstream quirk, kept for parity: once the ring KV cache is full, upstream's `RingKVCache` never
+  attends to the oldest slot, so the effective window is 2999 frames. The port does the same.
+
+### Measured on a MacBook Pro M4 (base, 32 GB)
+
+Random weights at full size (`python -m personaplex_mlx.bench`). Latency depends only on shapes and
+quantization. Sustained GPU bandwidth on this machine measured about 70-78 GB/s, so the
+temporal transformer has to be quantized to about 4 bits for real time:
+
+| Temporal / depformer bits | Weights | ms/frame, start of call | ms/frame, 4 min in | Real time (< 80 ms) |
+|---|---|---|---|---|
+| 6 / 8 | 6.5 GB | ~115 | ~118 | no |
+| 4 / 4 | 4.5 GB | ~60 | ~75 | yes, little headroom |
+
+These numbers cover the language model on random weights, not the complete microphone-to-speaker
+pipeline. The real checkpoint was converted to 4-bit temporal/depformer and 8-bit embeddings/head;
+local checkpoint assets total about 4.6 GiB. Real-weight codec checks compare continuous encoder
+features and shared-code decoded audio with upstream PyTorch; residual code IDs can differ near
+quantization boundaries. The codec now applies causal attention within audio chunks and uses
+upstream's exact GELU activation.
+
+These were taken under heavy memory pressure, so expect some variance. Audio quality at 4 bits hasn't
+been checked against the real weights yet. A previous community port reported degraded 4-bit output.
+
+### Usage (so far)
+
+```bash
+uv venv -p 3.12 && uv pip install -e ".[convert]"
+export HF_TOKEN=...   # accept the license at huggingface.co/nvidia/personaplex-7b-v1 first
+python -m personaplex_mlx.convert --out weights/personaplex-q4 --bits 4 --bits-depformer 4
+python -m personaplex_mlx.bench --model weights/personaplex-q4
+```
+
+Offline audio (any sample rate is resampled to 24 kHz mono):
+
+```bash
+personalplex-offline --model weights/personaplex-q4 --voice NATF2 \
+  --input-wav assets/test/input_assistant.wav --output-wav output/assistant.wav \
+  --output-text output/assistant.json
+```
+
+The output WAV matches the input duration. The JSON includes generated text and per-frame timing
+for the complete codec + language-model pipeline; model loading and prompt prefill are excluded.
+A real-time factor below 1 means processing finished faster than the audio duration.
+
+Local microphone conversation:
+
+```bash
+uv pip install -e ".[server]"
+personalplex-server --model weights/personaplex-q4 --voice NATF2 --port 8999
+```
+
+Open `http://127.0.0.1:8999` in a current Chromium browser, use headphones, and click
+**Start conversation**. Click **Stop** to release the microphone. The server binds only to loopback,
+accepts one conversation at a time, and rejects cross-origin requests. Audio uses uncompressed
+24 kHz mono float32 PCM over a local WebSocket; there is no external service or audio recording.
+The page stops if inference or playback falls behind rather than building an unbounded queue.
+This is a separate minimal client, not the upstream Opus WebSocket protocol. Microphone and
+speaker acceptance on real weights remains a manual check.
+
+Both commands accept `--text-prompt`, `--greedy`, `--seed`, and `--no-compile`.
+The model and voice preset are selected when the server starts.
+
+Tests (tiny random model, compared against the upstream PyTorch code):
+
+```bash
+uv pip install -e ".[dev,server]" -e ./moshi && python -m pytest tests
+```
+
+Opt-in check using downloaded codec weights (no additional downloads):
+
+```bash
+PERSONALPLEX_MODEL=weights/personaplex-q4 python -m pytest tests/test_codec_weights.py
+```
+
+Code is MIT (the Mimi codec in `personaplex_mlx/mimi/` is vendored from Kyutai's `moshi_mlx`, also
+MIT). The model weights are **not** redistributed here. They're under the NVIDIA Open Model License
+and you convert them locally.
+
+---
+
 # PersonaPlex: Voice and Role Control for Full Duplex Conversational Speech Models
 
 [![Weights](https://img.shields.io/badge/🤗-Weights-yellow)](https://huggingface.co/nvidia/personaplex-7b-v1)
