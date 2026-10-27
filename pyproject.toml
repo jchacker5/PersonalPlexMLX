@@ -11,14 +11,18 @@ dependencies = [
     "huggingface_hub>=0.24",
     "sentencepiece",
     "soundfile",
+    "scipy",
 ]
 
 [project.optional-dependencies]
 # torch is only needed once, to convert the upstream voice prompt files (*.pt).
 convert = ["torch"]
-dev = ["pytest", "torch==2.4.1", "safetensors", "numpy<2.2"]
+server = ["aiohttp>=3.10"]
+dev = ["pytest", "torch==2.4.1", "safetensors", "numpy<2.2", "aiohttp>=3.10"]
 
 [project.scripts]
+personalplex-offline = "personaplex_mlx.offline:main"
+personalplex-server = "personaplex_mlx.server:main"
 personalplex-convert = "personaplex_mlx.convert:main"
 personalplex-bench = "personaplex_mlx.bench:main"
 
@@ -28,3 +32,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["personaplex_mlx*"]
+
+[tool.setuptools.package-data]
+personaplex_mlx = ["web/*.html"]
+"personaplex_mlx.mimi" = ["LICENSE"]

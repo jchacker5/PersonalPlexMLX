@@ -3,6 +3,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+import re
 from dataclasses import dataclass
 
 import mlx.core as mx
@@ -186,6 +187,12 @@ class Mimi(nn.Module):
         for k, v in mx.load(file).items():
             v: mx.array = v
             k: str = ".".join([s.removeprefix("_") for s in k.split(".")])
+            # The upstream checkpoint has 32 codebooks; the LM uses only 8.
+            # Discard only the unused residual codebooks, keeping strict validation
+            # for every parameter required by this codec configuration.
+            match = re.match(r"quantizer\.rvq_rest\.vq\.layers\.(\d+)\.", k)
+            if match and int(match[1]) >= self.cfg.quantizer_nq - 1:
+                continue
             if k.startswith("encoder.model."):
                 k = k.replace("encoder.model.", "encoder.")
             if k.startswith("decoder.model."):

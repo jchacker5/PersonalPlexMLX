@@ -2,8 +2,10 @@
 
 > **Status: work in progress.** The MLX model, checkpoint converter, streaming generator and
 > benchmark are written and match the upstream PyTorch implementation token-for-token in greedy
-> parity tests. Not yet done: a run with the real weights (and a check of audio quality at 4-bit),
-> the offline WAV and live web-server entry points.
+> parity tests. Offline WAV and localhost microphone entry points are implemented.
+> Real weights have been converted locally and the Mimi codec checked against upstream.
+> End-to-end audio quality and real-time performance are not yet accepted: the first full
+> WAV run was interrupted when free disk space fell below the 5 GiB headroom limit.
 
 This fork adds `personaplex_mlx/`, an inference-only MLX port of
 [NVIDIA PersonaPlex](https://github.com/NVIDIA/personaplex) aimed at running the 7B full-duplex
@@ -58,6 +60,13 @@ temporal transformer has to be quantized to about 4 bits for real time:
 | 6 / 8 | 6.5 GB | ~115 | ~118 | no |
 | 4 / 4 | 4.5 GB | ~60 | ~75 | yes, little headroom |
 
+These numbers cover the language model on random weights, not the complete microphone-to-speaker
+pipeline. The real checkpoint was converted to 4-bit temporal/depformer and 8-bit embeddings/head;
+local checkpoint assets total about 4.6 GiB. Real-weight codec checks compare continuous encoder
+features and shared-code decoded audio with upstream PyTorch; residual code IDs can differ near
+quantization boundaries. The codec now applies causal attention within audio chunks and uses
+upstream's exact GELU activation.
+
 These were taken under heavy memory pressure, so expect some variance. Audio quality at 4 bits hasn't
 been checked against the real weights yet. A previous community port reported degraded 4-bit output.
 
@@ -70,10 +79,46 @@ python -m personaplex_mlx.convert --out weights/personaplex-q4 --bits 4 --bits-d
 python -m personaplex_mlx.bench --model weights/personaplex-q4
 ```
 
+Offline audio (any sample rate is resampled to 24 kHz mono):
+
+```bash
+personalplex-offline --model weights/personaplex-q4 --voice NATF2 \
+  --input-wav assets/test/input_assistant.wav --output-wav output/assistant.wav \
+  --output-text output/assistant.json
+```
+
+The output WAV matches the input duration. The JSON includes generated text and per-frame timing
+for the complete codec + language-model pipeline; model loading and prompt prefill are excluded.
+A real-time factor below 1 means processing finished faster than the audio duration.
+
+Local microphone conversation:
+
+```bash
+uv pip install -e ".[server]"
+personalplex-server --model weights/personaplex-q4 --voice NATF2 --port 8999
+```
+
+Open `http://127.0.0.1:8999` in a current Chromium browser, use headphones, and click
+**Start conversation**. Click **Stop** to release the microphone. The server binds only to loopback,
+accepts one conversation at a time, and rejects cross-origin requests. Audio uses uncompressed
+24 kHz mono float32 PCM over a local WebSocket; there is no external service or audio recording.
+The page stops if inference or playback falls behind rather than building an unbounded queue.
+This is a separate minimal client, not the upstream Opus WebSocket protocol. Microphone and
+speaker acceptance on real weights remains a manual check.
+
+Both commands accept `--text-prompt`, `--greedy`, `--seed`, and `--no-compile`.
+The model and voice preset are selected when the server starts.
+
 Tests (tiny random model, compared against the upstream PyTorch code):
 
 ```bash
-uv pip install -e ".[dev]" -e ./moshi && python -m pytest tests
+uv pip install -e ".[dev,server]" -e ./moshi && python -m pytest tests
+```
+
+Opt-in check using downloaded codec weights (no additional downloads):
+
+```bash
+PERSONALPLEX_MODEL=weights/personaplex-q4 python -m pytest tests/test_codec_weights.py
 ```
 
 Code is MIT (the Mimi codec in `personaplex_mlx/mimi/` is vendored from Kyutai's `moshi_mlx`, also

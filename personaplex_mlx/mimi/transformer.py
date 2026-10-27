@@ -149,6 +149,14 @@ class Attention(nn.Module):
             k = k[:, :, k_len - k_target_len :]
             v = v[:, :, k_len - k_target_len :]
 
+        if self.cfg.causal:
+            # Mimi produces two transformer steps per 80 ms audio frame. Even
+            # inside that chunk the first step must not attend to the second.
+            query_pos = mx.arange(t)[:, None] + k.shape[2] - t
+            key_pos = mx.arange(k.shape[2])[None, :]
+            delta = query_pos - key_pos
+            causal_mask = (delta >= 0) & (delta < self.cfg.context)
+            mask = causal_mask if mask is None else mx.where(causal_mask, mask, -mx.inf)
         xs = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
         xs = xs.transpose(0, 2, 1, 3).reshape(b, t, hd)
         xs = self.out_proj(xs)
@@ -181,7 +189,7 @@ class MlpNoGating(nn.Module):
         self.linear2 = nn.Linear(cfg.dim_feedforward, cfg.d_model, bias=cfg.bias_ff)
 
     def __call__(self, xs: mx.array) -> mx.array:
-        return self.linear2(nn.gelu_approx(self.linear1(xs)))
+        return self.linear2(nn.gelu(self.linear1(xs)))
 
 
 class TransformerLayer(nn.Module):

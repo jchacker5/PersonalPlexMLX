@@ -19,6 +19,8 @@ import tempfile
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from itertools import islice
 from pathlib import Path
 from typing import Callable
 
@@ -77,13 +79,20 @@ class TensorSource:
     def names(self) -> list[str]:
         return list(self.header)
 
-    def get(self, name: str) -> mx.array:
+    def get_numpy(self, name: str) -> np.ndarray:
+        # Worker threads do I/O only: MLX stream IDs belong to the calling thread.
         info = self.header[name]
         start, end = info["data_offsets"]
-        np_dtype, mx_view = _DTYPES[info["dtype"]]
-        arr = np.frombuffer(self._read(self.base + start, end - start), dtype=np_dtype).reshape(info["shape"])
-        a = mx.array(arr)
-        return a.view(mx_view) if mx_view is not None else a
+        np_dtype, _ = _DTYPES[info["dtype"]]
+        return np.frombuffer(self._read(self.base + start, end - start), dtype=np_dtype).reshape(info["shape"])
+
+    def to_mlx(self, name: str, arr: np.ndarray) -> mx.array:
+        _, mx_view = _DTYPES[self.header[name]["dtype"]]
+        value = mx.array(arr)
+        return value.view(mx_view) if mx_view is not None else value
+
+    def get(self, name: str) -> mx.array:
+        return self.to_mlx(name, self.get_numpy(name))
 
 
 def lm_weight_plan(names: list[str], cfg: PersonaPlexConfig) -> list[tuple[str, str, Callable]]:
@@ -162,6 +171,18 @@ class ShardWriter:
         self.buf, self.size = {}, 0
 
 
+def bounded_map(pool, fn, items, limit):
+    """Ordered prefetch with at most `limit` outstanding tensor downloads."""
+    if limit < 1:
+        raise ValueError("workers must be positive")
+    items = iter(items)
+    pending = deque(pool.submit(fn, item) for item in islice(items, limit))
+    while pending:
+        yield pending.popleft().result()
+        for item in islice(items, 1):
+            pending.append(pool.submit(fn, item))
+
+
 def convert_lm(source: TensorSource, out: Path, cfg: PersonaPlexConfig, q: dict, dtype=mx.bfloat16, workers: int = 4):
     plan = lm_weight_plan(source.names(), cfg)
     by_source: dict[str, list[tuple[str, Callable]]] = {}
@@ -172,7 +193,8 @@ def convert_lm(source: TensorSource, out: Path, cfg: PersonaPlexConfig, q: dict,
     total = sum(source.header[s]["data_offsets"][1] - source.header[s]["data_offsets"][0] for s in order)
     done, t0 = 0, time.time()
     with ThreadPoolExecutor(workers) as pool:
-        for src, w in zip(order, pool.map(source.get, order)):
+        for src, raw in zip(order, bounded_map(pool, source.get_numpy, order, workers)):
+            w = source.to_mlx(src, raw)
             for dst, fn in by_source[src]:
                 t = fn(w)
                 spec = quant_spec(dst, t.shape, q)
