@@ -1,0 +1,10 @@
+{
+  "text": " Good morning, this is Ayelen with CitySan Services. How can I help you today? I' sorry, but we don' offer part replacements. We handle waste management services like regular pickups and compost bins. Would you like to set up a regular pickup schedule?",
+  "stats": {
+    "frames": 250,
+    "seconds": 52.243465542036574,
+    "real_time_factor": 2.612173277101829,
+    "frame_ms_median": 204.4127500266768,
+    "frame_ms_p95": 281.9880624883808
+  }
+}

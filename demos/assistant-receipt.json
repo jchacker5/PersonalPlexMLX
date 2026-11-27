@@ -1,0 +1,11 @@
+{
+  "date_utc": "2026-11-27T21:35:05.433965+00:00",
+  "source_commit": "8ac9d9f04a8adf4c9c4463e6f7717afc809f8c18",
+  "input": "assets/test/input_assistant.wav",
+  "input_sha256": "6fefe378a39602d83d8ea0ef165309b7a7508bd371c1d5bea6196e6ff6f57d2e",
+  "voice": "NATF2",
+  "seed": 42424242,
+  "precision": "4-bit temporal / 4-bit depformer / 8-bit embeddings and head",
+  "hardware": "Apple M4, 32 GB unified memory",
+  "timing_scope": "Codec + LM generation; excludes loading/prompt prefill; includes first-use compilation of later attention buckets. One run, shared development machine."
+}

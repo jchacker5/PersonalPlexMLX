@@ -1,176 +1,125 @@
-# PersonaPlex: Voice and Role Control for Full Duplex Conversational Speech Models
+# PersonalPlexMLX
 
-[![Weights](https://img.shields.io/badge/🤗-Weights-yellow)](https://huggingface.co/nvidia/personaplex-7b-v1)
-[![Paper](https://img.shields.io/badge/📄-Paper-blue)](https://arxiv.org/abs/2602.06053)
-[![Demo](https://img.shields.io/badge/🎮-Demo-green)](https://research.nvidia.com/labs/adlr/personaplex/)
-[![Discord](https://img.shields.io/badge/Discord-Join-purple?logo=discord)](https://discord.gg/5jAXrrbwRb)
+**An independent Apple Silicon inference port of NVIDIA PersonaPlex, built with MLX.**
 
-PersonaPlex is a real-time, full-duplex speech-to-speech conversational model that enables persona control through text-based role prompts and audio-based voice conditioning. Trained on a combination of synthetic and real conversations, it produces natural, low-latency spoken interactions with a consistent persona. PersonaPlex is based on the [Moshi](https://arxiv.org/abs/2410.00037) architecture and weights.
+This project explores a practical systems problem: how to run a 7B full-duplex speech model
+on a base M4 MacBook with 32 GB of unified memory. It adds a quantized model port, a bounded
+streaming checkpoint converter, an offline WAV runner, and a localhost microphone interface.
 
-<p align="center">
-  <img src="assets/architecture_diagram.png" alt="PersonaPlex Model Architecture">
-  <br>
-  <em>PersonaPlex Architecture</em>
-</p>
+**Status: experimental.** Tiny-model language-model parity and real-weight codec checks pass.
+Completed end-to-end measurements and audio examples are documented in [the demo report](demos/README.md).
+Microphone/speaker acceptance and broad audio-quality evaluation remain separate work.
 
-## Usage
+## Engineering contributions
 
-### Prerequisites
+- **Reduced inference work:** generate the eight agent audio codebooks; omit the eight
+  user-codebook predictions that upstream replaces with microphone input. Greedy parity is
+  tested against upstream on a tiny random model, including cache wraparound.
+- **Compiled frame execution:** combine temporal transformer, text sampling, depformer and
+  audio sampling into one compiled MLX language-model call per frame.
+- **Prompt prefill and reuse:** batch teacher-forced voice/text prompts, then snapshot and
+  restore conversation state.
+- **Memory-aware conversion:** fetch the 16.7 GB source checkpoint by HTTP ranges and quantize
+  tensors incrementally. Bound download read-ahead and keep MLX operations on the calling thread
+  to avoid stream-affinity errors. Source weights never need to occupy disk in full.
+- **Mixed precision and attention buckets:** use separate bit widths for temporal, depformer,
+  and embedding/head weights; bucket attention lengths over a fixed temporal KV ring.
+- **Codec correctness:** retain the required Mimi codebooks with strict loading, enforce causal
+  attention inside audio chunks, and match upstream's exact GELU activation.
 
-Install the [Opus audio codec](https://github.com/xiph/opus) development library:
+The port and its tools live in [`personaplex_mlx/`](personaplex_mlx/). The original PyTorch
+implementation in [`moshi/`](moshi/) is retained as a reference.
+
+## Quick start
+
+Requires Apple Silicon, macOS, Python 3.12, and [uv](https://docs.astral.sh/uv/).
+The measured development machine is an Apple M4 with 32 GB RAM. Allow approximately 4.6 GiB
+for converted assets plus working space; retain at least 5 GiB of free disk before inference.
+These are development observations, not a minimum-hardware guarantee.
+
 ```bash
-# Ubuntu/Debian
-sudo apt install libopus-dev
-
-# Fedora/RHEL
-sudo dnf install opus-devel
+git clone https://github.com/jchacker5/PersonalPlexMLX.git
+cd PersonalPlexMLX
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -e ".[convert,server]"
 ```
 
-### Installation
+Accept access terms for [NVIDIA's model](https://huggingface.co/nvidia/personaplex-7b-v1)
+in your Hugging Face account, then authenticate locally. A read token is sufficient for downloads;
+review the permissions if you choose the CLI's browser authorization flow.
 
-Download this repository and install with:
 ```bash
-pip install moshi/.
+hf auth login
+personalplex-convert --out weights/personaplex-q4 --bits 4 --bits-depformer 4
 ```
 
-Extra step for Blackwell based GPUs as suggested in (See https://github.com/NVIDIA/personaplex/issues/2):
+The default embedding/head precision is 8-bit. Model weights are downloaded and converted
+locally; they are not included in this repository.
+
+### Generate a WAV
+
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+personalplex-offline --model weights/personaplex-q4 --voice NATF2 \
+  --input-wav assets/test/input_assistant.wav \
+  --output-wav output/assistant.wav --output-text output/assistant.json
 ```
 
+Input audio is resampled to 24 kHz mono. The output has the input's duration; the JSON contains
+text and frame timing. Timing includes the codec and language model and excludes model loading
+and prompt prefill. See [the demo report](demos/README.md) for measured scope and limitations.
 
-### Accept Model License
-Log in to your Huggingface account and accept the PersonaPlex model license [here](https://huggingface.co/nvidia/personaplex-7b-v1). <br>
-Then set up your Huggingface authentication:
+### Talk locally
+
 ```bash
-export HF_TOKEN=<YOUR_HUGGINGFACE_TOKEN>
+personalplex-server --model weights/personaplex-q4 --voice NATF2 --port 8999
 ```
 
-### Launch Server
+Open `http://127.0.0.1:8999` in a current Chromium browser. Use headphones, click **Start
+conversation**, and grant microphone access. **Stop** releases the microphone.
+The server binds to loopback, allows one conversation, rejects cross-origin requests, and uses
+raw float32 PCM over a local WebSocket. The client stops when audio falls behind.
+Audio is not saved or sent to an external inference service by this client.
 
-Launch server for live interaction (temporary SSL certs for https):
+Both commands support `--text-prompt`, `--seed`, `--greedy`, and `--no-compile`.
+
+## Verification
+
 ```bash
-SSL_DIR=$(mktemp -d); python -m moshi.server --ssl "$SSL_DIR"
+uv pip install -e ".[dev,server]" -e ./moshi
+python -m pytest tests -q
+# With locally downloaded assets, also run real-codec verification:
+PERSONALPLEX_MODEL=weights/personaplex-q4 python -m pytest tests -q
 ```
 
-**CPU Offload:** If your GPU has insufficient memory, use the `--cpu-offload` flag to offload model layers to CPU. This requires the `accelerate` package (`pip install accelerate`):
-```bash
-SSL_DIR=$(mktemp -d); python -m moshi.server --ssl "$SSL_DIR" --cpu-offload
-```
+Tests cover tiny-model greedy parity against upstream PyTorch, compiled/eager execution,
+cache wraparound, prompt restoration, bounded conversion and bfloat16 thread handling,
+audio framing/resampling, causal codec attention, GELU matching, and WebSocket validation.
+The opt-in real-codec test compares continuous encoder features and shared-code decoded audio
+on five speech frames. It does not establish full-model quantization parity or human sound quality.
 
-Access the Web UI from a browser at `localhost:8998` if running locally, otherwise look for the access link printed by the script:
-```
-Access the Web UI directly at https://11.54.401.33:8998
-```
+## Tradeoffs and remaining work
 
-### Offline Evaluation
+4-bit quantization reduces memory traffic but can affect speech quality. Random-weight
+language-model timing is not proof of end-to-end real-time conversation. The earlier development
+benchmark reported roughly 60–75 ms per language-model frame at 4-bit on this M4; treat it as
+historical, model-only evidence. Use the reproducible real-weight results in the demo report
+for the current complete pipeline.
 
-For offline evaluation use the offline script that streams in an input wav file and produces an output wav file from the captured output stream. The output file will be the same duration as the input file.
+Remaining evaluation includes longer conversations, repeated timing runs, listening comparisons
+across precision levels, and microphone/speaker acceptance. This repository is an inference port,
+not a newly trained foundation model.
 
-Add `--cpu-offload` to any command below if your GPU has insufficient memory (requires `accelerate` package). Or install cpu-only PyTorch for offline evaluation on pure CPU.
+## Credits and licenses
 
-**Assistant example:**
-```bash
-HF_TOKEN=<TOKEN> \
-python -m moshi.offline \
-  --voice-prompt "NATF2.pt" \
-  --input-wav "assets/test/input_assistant.wav" \
-  --seed 42424242 \
-  --output-wav "output.wav" \
-  --output-text "output.json"
-```
+Maintained by [jchacker5](https://github.com/jchacker5). This is an independent community project,
+not an official NVIDIA or Kyutai release and not endorsed by either organization.
 
-**Service example:**
-```bash
-HF_TOKEN=<TOKEN> \
-python -m moshi.offline \
-  --voice-prompt "NATM1.pt" \
-  --text-prompt "$(cat assets/test/prompt_service.txt)" \
-  --input-wav "assets/test/input_service.wav" \
-  --seed 42424242 \
-  --output-wav "output.wav" \
-  --output-text "output.json"
-```
+- **NVIDIA:** [PersonaPlex model, research and original implementation](https://github.com/NVIDIA/personaplex).
+- **Kyutai:** [Moshi and Mimi](https://github.com/kyutai-labs/moshi), including the vendored MLX codec.
+- **Apple:** MLX and the cache implementation credited in the vendored source.
 
-## Voices
-
-PersonaPlex supports a wide range of voices; we pre-package embeddings for voices that sound more natural and conversational (NAT) and others that are more varied (VAR). The fixed set of voices are labeled:
-```
-Natural(female): NATF0, NATF1, NATF2, NATF3
-Natural(male):   NATM0, NATM1, NATM2, NATM3
-Variety(female): VARF0, VARF1, VARF2, VARF3, VARF4
-Variety(male):   VARM0, VARM1, VARM2, VARM3, VARM4
-```
-
-## Prompting Guide
-
-The model is trained on synthetic conversations for a fixed assistant role and varying customer service roles.
-
-### Assistant Role
-
-The assistant role has the prompt:
-```
-You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way.
-```
-
-Use this prompt for the QA assistant focused "User Interruption" evaluation category in [FullDuplexBench](https://arxiv.org/abs/2503.04721).
-
-### Customer Service Roles
-
-The customer service roles support a variety of prompts. Here are some examples for prompting style reference:
-```
-You work for CitySan Services which is a waste management and your name is Ayelen Lucero. Information: Verify customer name Omar Torres. Current schedule: every other week. Upcoming pickup: April 12th. Compost bin service available for $8/month add-on.
-```
-```
-You work for Jerusalem Shakshuka which is a restaurant and your name is Owen Foster. Information: There are two shakshuka options: Classic (poached eggs, $9.50) and Spicy (scrambled eggs with jalapenos, $10.25). Sides include warm pita ($2.50) and Israeli salad ($3). No combo offers. Available for drive-through until 9 PM.
-```
-```
-You work for AeroRentals Pro which is a drone rental company and your name is Tomaz Novak. Information: AeroRentals Pro has the following availability: PhoenixDrone X ($65/4 hours, $110/8 hours), and the premium SpectraDrone 9 ($95/4 hours, $160/8 hours). Deposit required: $150 for standard models, $300 for premium.
-```
-
-### Casual Conversations
-
-The model is also trained on real conversations from the [Fisher English Corpus](https://catalog.ldc.upenn.edu/LDC2004T19) with LLM-labeled prompts for open-ended conversations. Here are some example prompts for casual conversations:
-```
-You enjoy having a good conversation.
-```
-```
-You enjoy having a good conversation. Have a casual discussion about eating at home versus dining out.
-```
-```
-You enjoy having a good conversation. Have an empathetic discussion about the meaning of family amid uncertainty.
-```
-```
-You enjoy having a good conversation. Have a reflective conversation about career changes and feeling of home. You have lived in California for 21 years and consider San Francisco your home. You work as a teacher and have traveled a lot. You dislike meetings.
-```
-```
-You enjoy having a good conversation. Have a casual conversation about favorite foods and cooking experiences. You are David Green, a former baker now living in Boston. You enjoy cooking diverse international dishes and appreciate many ethnic restaurants.
-```
-
-Use the prompt `You enjoy having a good conversation.` for the "Pause Handling", "Backchannel" and "Smooth Turn Taking" evaluation categories of FullDuplexBench.
-
-## Generalization
-
-Personaplex finetunes Moshi and benefits from the generalization capabilities of the underlying [Helium](https://kyutai.org/blog/2025-04-30-helium) LLM. Thanks to the broad training corpus of the backbone, we find that the model will respond plausibly to out-of-distribution prompts and lead to unexpected or fun conversations. We encourage experimentation with different prompts to test the model's emergent ability to handle scenarios outside its training distribution. As an inspiration we feature the following astronaut prompt in the WebUI:
-```
-You enjoy having a good conversation. Have a technical discussion about fixing a reactor core on a spaceship to Mars. You are an astronaut on a Mars mission. Your name is Alex. You are already dealing with a reactor core meltdown on a Mars mission. Several ship systems are failing, and continued instability will lead to catastrophic failure. You explain what is happening and you urgently ask for help thinking through how to stabilize the reactor.
-```
-
-## License
-
-The present code is provided under the MIT license. The weights for the models are released under the NVIDIA Open Model license.
-
-## Citation
-
-If you use PersonaPlex in your research, please cite our paper:
-```bibtex
-@misc{roy2026personaplexvoicerolecontrol,
-      title={PersonaPlex: Voice and Role Control for Full Duplex Conversational Speech Models}, 
-      author={Rajarshi Roy and Jonathan Raiman and Sang-gil Lee and Teodor-Dumitru Ene and Robert Kirby and Sungwon Kim and Jaehyeon Kim and Bryan Catanzaro},
-      year={2026},
-      eprint={2602.06053},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2602.06053}, 
-}
-```
+Code is MIT; upstream source notices and license files are retained, including the
+[vendored codec license](personaplex_mlx/mimi/LICENSE). Weights have separate terms in the
+[NVIDIA model repository](https://huggingface.co/nvidia/personaplex-7b-v1).
+See the [preserved upstream README](docs/UPSTREAM_README.md) for research citation and original usage.

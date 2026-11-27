@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PersonalPlexMLX</title>
+<style>
+:root{color-scheme:light dark;font:17px system-ui}body{max-width:680px;margin:10vh auto;padding:24px}h1{letter-spacing:-.04em}button{font:inherit;padding:12px 24px;border-radius:12px;margin-right:12px;cursor:pointer}#status{margin:24px 0}#transcript{white-space:pre-wrap;line-height:1.6;min-height:100px}small{opacity:.7}button:focus-visible{outline:3px solid #658cff}
+</style>
+<h1>PersonalPlexMLX</h1><p>A conversation running on your Mac.</p>
+<p>Use headphones to prevent the microphone from picking up the assistant. Audio stays on this computer and is not saved by this page.</p>
+<button id="start">Start conversation</button><button id="stop" disabled>Stop</button>
+<p id="status" role="status">Ready. Your microphone is off.</p>
+<div id="transcript" aria-label="Assistant transcript"></div>
+<small>Independent MLX port of NVIDIA PersonaPlex, built on Kyutai Moshi and Mimi.</small>
+<script>
+const start=document.querySelector('#start'), stop=document.querySelector('#stop'), status=document.querySelector('#status'), transcript=document.querySelector('#transcript');
+let socket,context,stream,source,processor,gain,playhead=0,active=false,starting=false;
+async function finish(message='Stopped. Your microphone is off.') {
+ active=false; starting=false;
+ if(processor){processor.onaudioprocess=null;processor.disconnect();processor=null;}
+ if(source){source.disconnect();source=null;}
+ if(gain){gain.disconnect();gain=null;}
+ if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+ const oldSocket=socket;socket=null;if(oldSocket){oldSocket.onclose=null;oldSocket.close();}
+ const oldContext=context;context=null;if(oldContext)await oldContext.close().catch(()=>{});
+ start.disabled=false;stop.disabled=true;status.textContent=message;
+}
+start.onclick=async()=>{
+ if(starting||active)return;starting=true;start.disabled=true;transcript.textContent='';
+ try {
+  context=new AudioContext({sampleRate:24000});await context.resume();
+  if(context.sampleRate!==24000)throw Error('This browser does not support 24 kHz audio. Try a current Chromium browser.');
+  stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
+  source=context.createMediaStreamSource(stream);
+  // Small local client; ScriptProcessor is retained for broad localhost compatibility.
+  processor=context.createScriptProcessor(2048,1,1);gain=context.createGain();gain.gain.value=0;
+  source.connect(processor);processor.connect(gain);gain.connect(context.destination);
+  socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);socket.binaryType='arraybuffer';
+  let inflight=0;let buffered=new Float32Array(0);playhead=context.currentTime;
+  socket.onmessage=event=>{
+   if(typeof event.data==='string') {
+    const message=JSON.parse(event.data);
+    if(message.type==='ready'){active=true;starting=false;stop.disabled=false;status.textContent='Listening and speaking. Microphone is on.';}
+    if(message.type==='frame')inflight=Math.max(0,inflight-1);
+    if(message.type==='text')transcript.textContent+=message.text;
+    if(message.type==='error')void finish(message.message);
+   } else if(active) {
+    const pcm=new Float32Array(event.data), audio=context.createBuffer(1,pcm.length,24000);audio.copyToChannel(pcm,0);
+    if(playhead-context.currentTime>1){void finish('Playback fell behind. Start again to reconnect.');return;}
+    const node=context.createBufferSource();node.buffer=audio;node.connect(context.destination);
+    playhead=Math.max(playhead,context.currentTime+.02);node.start(playhead);playhead+=audio.duration;
+   }
+  };
+  socket.onclose=()=>void finish('Connection closed. Your microphone is off.');
+  socket.onerror=()=>void finish('Could not connect. Check that the local model server is running.');
+  processor.onaudioprocess=event=>{
+   if(!active||socket?.readyState!==WebSocket.OPEN)return;
+   const input=event.inputBuffer.getChannelData(0), next=new Float32Array(buffered.length+input.length);
+   next.set(buffered);next.set(input,buffered.length);buffered=next;
+   while(buffered.length>=1920) {
+    if(inflight>=6||socket.bufferedAmount>7680*6){void finish('Inference fell behind. Start again to reconnect.');return;}
+    inflight++;socket.send(buffered.slice(0,1920).buffer);buffered=buffered.slice(1920);
+   }
+  };
+  status.textContent='Preparing conversation…';
+ }catch(error){await finish(error.message);}
+};
+stop.onclick=()=>void finish();
+window.addEventListener('pagehide',()=>{stream?.getTracks().forEach(t=>t.stop());socket?.close();});
+</script></html>

@@ -183,3 +183,14 @@ mlx-trace.json
 # Include everything in assets
 !assets/
 !assets/**
+
+# PersonalPlexMLX
+.venv/
+weights/
+
+# Published generated audio examples (no model weights)
+!demos/
+!demos/*.wav
+
+# Local inference outputs
+/output/

@@ -1,0 +1,35 @@
+{
+  "command": [
+    "python",
+    "scripts/record_demo.py",
+    "--receipt",
+    "output/validation/service-receipt.json",
+    "--model",
+    "weights/personaplex-q4",
+    "--voice",
+    "NATM1",
+    "--text-prompt",
+    "You work for CitySan Services which is a waste management and your name is Ayelen Lucero. Information: Verify customer name Omar Torres. Current schedule: every other week. Upcoming pickup: April 12th. Compost bin service available for $8/month add-on.",
+    "--input-wav",
+    "assets/test/input_service.wav",
+    "--output-wav",
+    "output/validation/service-q4.wav",
+    "--output-text",
+    "output/validation/service-q4.json"
+  ],
+  "git_head": "8ac9d9f04a8adf4c9c4463e6f7717afc809f8c18",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "chip": "Apple M4",
+  "python": "3.12.12",
+  "mlx": "0.32.4",
+  "wall_seconds_including_loading": 57.26724366704002,
+  "peak_mlx_memory_gib": 7.610058058053255,
+  "peak_process_rss_gib": 4.356536865234375,
+  "input_sha256": "523e129a58c55f9caca7cf87683b51d6bf5fd362d08eb4e2a226b0bde10e3ab5",
+  "quantization": {
+    "bits_temporal": 4,
+    "bits_depformer": 4,
+    "bits_other": 8,
+    "group_size": 64
+  }
+}

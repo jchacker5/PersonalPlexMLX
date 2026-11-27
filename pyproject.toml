@@ -1,0 +1,38 @@
+[project]
+name = "personalplex-mlx"
+version = "0.1.0"
+description = "Real-time PersonaPlex full-duplex speech-to-speech on Apple Silicon with MLX."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "mlx>=0.29",
+    "numpy",
+    "huggingface_hub>=0.24",
+    "sentencepiece",
+    "soundfile",
+    "scipy",
+]
+
+[project.optional-dependencies]
+# torch is only needed once, to convert the upstream voice prompt files (*.pt).
+convert = ["torch"]
+server = ["aiohttp>=3.10"]
+dev = ["pytest", "torch==2.4.1", "safetensors", "numpy<2.2", "aiohttp>=3.10"]
+
+[project.scripts]
+personalplex-offline = "personaplex_mlx.offline:main"
+personalplex-server = "personaplex_mlx.server:main"
+personalplex-convert = "personaplex_mlx.convert:main"
+personalplex-bench = "personaplex_mlx.bench:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["personaplex_mlx*"]
+
+[tool.setuptools.package-data]
+personaplex_mlx = ["web/*.html"]
+"personaplex_mlx.mimi" = ["LICENSE"]
