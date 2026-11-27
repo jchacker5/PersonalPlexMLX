@@ -1,0 +1,8 @@
+{
+  "input_frames": 8,
+  "output_frames": 8,
+  "sample_rate": 24000,
+  "output_samples_per_frame": 1920,
+  "finite_pcm": true,
+  "scope": "Real local HTTP health and PCM WebSocket inference; microphone/speaker browser acceptance not tested"
+}

@@ -187,3 +187,10 @@ mlx-trace.json
 # PersonalPlexMLX
 .venv/
 weights/
+
+# Published generated audio examples (no model weights)
+!demos/
+!demos/*.wav
+
+# Local inference outputs
+/output/
